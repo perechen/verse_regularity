@@ -1,17 +1,20 @@
 ---
 title: "Rhythm regularity"
 author: "Artjoms Šeļa"
-date: '2022-09-01'
-output: 
-  html_document:
+date: '2022-11-08'
+output:
+  github_document:
     toc: true
     toc_depth: 4
 ---
 
 ```{r setup, include=FALSE,warning=F,message=F}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE,warning=F,message=F)
 
 ```
+
+**DISCLAIMER**. NCR is not an open source corpus, so we cannot provide it here. We demonstrate our handling of data, but the code in the **Setup** section is not executable autonomously. Jump to **Rhythm entropy** for fully reproducible analysis.
+
 
 # Setup
 
@@ -30,9 +33,9 @@ source("src/calculate_regularity.R")
 
 # Data preparation
 
-We will use two datasets: 
+We use two datasets: 
 
--- NCR: National Russian corpus, poetry corpus;
+-- NCR: National Corpus of Russian language, poetry corpus;  
 -- 19th century narrative fiction (dataverse)
 
 ## Ruscorpora
@@ -41,11 +44,13 @@ Assume we have stress annotations: files with postfix `accented.txt` holding ind
 
 
 ```{r load ruscorp metadata and texts}
+
+ncr_path = "../../digital-poetics/"
 ## ruscorp metadata
-ruscorp <- read_tsv("../digital-poetics/ruscorpora_new.tsv")
+ruscorp <- read_tsv(paste0(ncr_path,"ruscorpora_new.tsv"))
 
 ## get all text paths
-rusc_texts <- paste0("../digital-poetics/ruscorp_stressed/", ruscorp$path, ".txt")
+rusc_texts <- paste0(ncr_path, "ruscorp_stressed/", ruscorp$path, ".txt")
 
 ## get texts
 texts <- lapply(rusc_texts,read_file)
@@ -81,7 +86,7 @@ ruscorp <- ruscorp %>% left_join(acc_texts,by="doc_id")
 ## save
 saveRDS(ruscorp,"data/ruscorp_full.rds")
 
-head(ruscorp,10)
+
 ```
 
 ### Sample by meter
@@ -90,6 +95,7 @@ head(ruscorp,10)
 
 Often forms used in a poem get quite heterogeneous and metrical annotation -- complex and long. We use only clear-cut cases for classic meter (enough data) and assume that summary definitions for accentual and less regular forms (dolniks etc.) are trustworthy (the usual form of these cases is -- `something something iamb, trochee, accentual: Dolnik`). We avoid further heterometry by using only explicit `: Dolink[end-of-string]` cases.  
 
+Gentle cleaning of metrical labels.
 
 ```{r meter labels}
 ruscorp <- readRDS("data/ruscorp_full.rds")
@@ -103,8 +109,6 @@ ruscorp <- ruscorp %>%
          meter_tidy = ifelse(str_detect(meter,": Ак$"), "Ак", meter_tidy),
          # Вл == verse libre (free verse)
          meter_tidy = ifelse(str_detect(meter,": Вл"), "Вл", meter_tidy))
-
-#dk <- ruscorp %>% select(meter_tidy, meter, text) %>% filter(meter_tidy=="Дк") %>% sample_n(100)
 
 
 ```
@@ -127,6 +131,8 @@ ggplot(meters_c %>% filter(rank <= 100), aes(rank, n,group=1)) +
 
 ```
 
+Build labels, define subset of meters, sample 700 poems per each meter; save.
+
 ```{r meter subset}
 labs <- c(rep("classic-meter",5), "Accentual, 1-2", "Accentual, 1-3", "Accentual", "Free verse")
 ## target subset of meters
@@ -142,23 +148,25 @@ s <- ruscorp %>%
 saveRDS(s,"data/m_sample.rds")
 ```
 
-# Prose handling
+## Prose handling
 
 -- first construct ~2k word samples, 1 per available book
--- then stress the s* out of them
--- then go to paras level (sample 700)
--- then go to quasi poem level (sample 700)
+-- do the stress annotation (`ru_accent_poet` module)
+-- grab baseline prose at paragraphs level (sample 700)
+-- construct quasi-poems (~700)
 -- record text + binary
 
 NB!
 
 -- measure length (in lines) for a poem (rusc sample)
--- measure average line length for a poem (rusc sample)
+-- measure average line length for a poem (rusc sample)  
+
+Read prose corpus:
 
 
 ```{r prose handling}
 
-f <- list.files("data/prose/texts/",full.names = T)
+f <- list.files("../data/prose/texts/",full.names = T)
 p_df <- tibble(file = f, text=lapply(f, read_lines)) %>% unnest(text)
 
 # tally 10 first lines
@@ -173,6 +181,8 @@ p_df <- p_df %>%
 #saveRDS(p_df,"data/prose_df.rds")
 p_df <- readRDS("data/prose_df.rds")
 ```
+
+Sample consecutive paragraphs to the chunks of length of ~2000 words. 1 text = 1 chunk of 2k words.
 
 ```{r prose sampling paragraphs}
 
@@ -205,9 +215,9 @@ s_df <- v %>%
   summarize(text = paste(text, collapse = "\n")) %>% 
   mutate(sample=paste0("prs-",row_number()))
 
-## write and clean (scansion pipeline breaks for weird reasons)
+## write and clean (python module breaks for weird reasons, e.g. when encounters dashes in specific positions, etc.)
 
-path="data/prose/prose_samples/"
+path="../data/prose/prose_samples/"
 for(i in 1:nrow(s_df)) {
 
   p = paste0(path, s_df$sample[i],".txt")
@@ -225,20 +235,31 @@ for(i in 1:nrow(s_df)) {
 
 ```
 
+Call python stress detection script to folder of prose samples.
 
-# Sample construction
+```{r call python for stress, warning=F,message=F,eval=F}
+## tensorflow will throw some errors, just ignore them. Detection is not running on GPU currently.
 
-## Paragraph sampling
+library(reticulate)
+py_install("ru_accent_poet --ignore-installed certifi", pip = TRUE)
+py_run_file("src/stress_detection.py")
+```
+
+
+
+### Sample construction
+
+#### Paragraph sampling
 
 ```{r load prose samples}
 ## read accented prose
 
-f <- list.files("data/prose/prose_samples/")
+f <- list.files("../data/prose/prose_samples/")
 
 f_a <- f[str_detect(f,"accented")]
 
 pr_df <- tibble(doc_id = f_a,
-       acc_text = sapply(paste0("data/prose/prose_samples/",f_a), read_lines)) %>% unnest(cols=acc_text)
+       acc_text = sapply(paste0("../data/prose/prose_samples/",f_a), read_lines)) %>% unnest(cols=acc_text)
 ```
 
 
@@ -256,7 +277,7 @@ saveRDS(pr_baseline,"data/baseline_prose.rds")
 ```
 
 
-## Quasi-poem construction
+#### Quasi-poem construction
 
 Binarize prose rhythm, keep spaces intact. 
 
@@ -268,16 +289,26 @@ pr_full <- pr_df %>%
   group_by(doc_id) %>% 
   summarize(acc_text=paste(acc_text,collapse ="\n"))
 
-## 
-pr_bin <- to_binary(pr_full,document = "doc_id",text="acc_text",preserve_spaces = T) %>% mutate(stress_pattern=str_remove(stress_pattern, "^ *"),
-                                                                                                stress_pattern=str_remove(stress_pattern, " *$"),
-                                                                                                stress_pattern=str_replace_all(stress_pattern, " {2,10}", " "))
+## binarize and clean
+pr_bin <- to_binary(pr_full,
+                    document = "doc_id",
+                    text="acc_text",
+                    preserve_spaces = T) %>%
+  mutate(stress_pattern=str_remove(stress_pattern, "^ *"),               stress_pattern=str_remove(stress_pattern, " *$"),
+         stress_pattern=str_replace_all(stress_pattern, " {2,10}", " "))
+
+knitr::kable(head(pr_bin,5))
 ```
+
+Get empirical distributions of line lengths and syllables per line.
+
 ```{r prepare poetry for quasi}
 
-ru <- ruscorp %>% ungroup() %>% 
+ru <- ruscorp %>%
+  ungroup() %>% 
   mutate(doc_id = paste("rusc-",row_number()))
 
+## all vowels. In Russian 1 vowel == 1 syllable
 vowels <-  c("а", "е","ё", "у", "о", "ю", "я", "и", "ы", "э")
 syl_pattern <- paste(vowels, collapse="|")
 ## will take time
@@ -297,7 +328,15 @@ ru_counts <- ru_unnested %>%
 lines_pool <- ru_counts$n_syl
 lines_pool <- lines_pool[lines_pool != 0] # fixing 0-length line (prob in other languages)
 length_pool <- ru_counts %>% select(doc_id,n_lines) %>% unique()
+
+p_len <- ggplot(length_pool,aes(n_lines)) + geom_histogram(bins=100) + scale_x_log10() + labs(title="Syllables per line")
+
+p_lin <- tibble(n_syl=lines_pool) %>% ggplot(aes(n_syl)) + geom_histogram(bins = 100) + scale_x_log10() + labs(title="Lines per poem")
+
+library(patchwork)
+p_lin + p_len
 ```
+Split by words, calculate syllable cumulative sum (to chunk consecutively)
 
 ```{r prepare prose}
 # calculate n sylables in words and cumulative sum
@@ -314,17 +353,21 @@ total <- pr_sim %>%
   summarize(total_syl=sum(nsyl_w))
 
 pr_split <- pr_sim %>% group_by(doc_id) %>% group_split()
+
+knitr::kable(head(pr_split[[1]],10))
 ```
 
+Each chunk of prose we cut to as many quasi poems as we can fit there; for each poem we determine lengths in lines and length of line drawing from RNC distribution.
 
 ```{r construct quasi poems loop, message=F}
-
 ## new vector for dataframes with quasi poems constructed from each text
 
 quasi_p_list <- vector(length = length(pr_split),mode="list")
 
 
 set.seed(76513)
+
+# For each large prose chunk
 for(doc in 1:length(pr_split)) {
 
 ## vars  
@@ -337,6 +380,7 @@ orig_id <- x$doc_id %>% unique()
 p_list <- NULL
 ll_list <- NULL
 
+## Cut as many poems as possible, stop when total available syllables are exceeded 
 ## def not more than 5m poems
 for(i in 1:5000000) {
   ## get poem size
@@ -397,8 +441,14 @@ quasi_p_list[[doc]] <- v
 
 }
 
-# implement limit on extra large stuff 
 ```
+
+So let's see what we get: this is one quasi poem of 14 lines cut approximately to 11 syllables per line (both dimension were determined randomly based on RNC distributions)---approximately, because it respects the words and does not cut through words.
+
+```{r}
+knitr::kable(quasi_p_list[[1]] %>% filter(qp_id=="quasip-1-1"))
+```
+In total, we have ~8.5 k poems. Now saving as data frame.
 
 ```{r finalize quasi poems}
 quasi_df <- quasi_p_list %>% bind_rows()
@@ -412,16 +462,20 @@ quasi_df
 ```
 
 
-# Rhythm entropy
+# Rhythm entropy  
+
+**DISCLAIMER!** Code above should be autonomously executable, it has all data needed for this.
 
 ## Extracting intervals
 
+
+Read and combine corpora
 
 ```{r combine all samples}
 
 ## already binarized
 
-quasi_prose <- readRDS("data/quasi_df.rds")# %>% 
+quasi_prose <- readRDS("data/quasi_df.rds") 
 
 
 ## sample 2 quasi poems from each prose text
@@ -456,6 +510,8 @@ ru_sample <- ru_poetry %>%
 ```
 
 
+Binarize baseline prose and RNC (quasi poems are already binarized)  
+
 ```{r binarize}
 corpus <- ru_sample %>%
   bind_rows(baseline_prose)
@@ -475,7 +531,7 @@ ll <- v2 %>%
 
 
 
-## extracts intervals, leaves anacrusis, drops clausula, "11" cases count as interval of length 0
+## extracts intervals: leaves anacrusis, drops clausula, "11" cases count as interval of length 0
 i <- extract_intervals(v2, no_anacrusis = F, no_clausula = T)
 
 ### checks 
@@ -512,17 +568,19 @@ entr_meta <- entr %>%
 
 saveRDS(entr_meta,"data/entr_fin.rds")
 
+knitr::kable(head(entr_meta,10))
 ```
 
 # Analysis
 
-## Entropy distributions
+## Entropy distributions (Figure 2)
 
 Distribution of entropy values in each of our subsets
 
 ```{r entropy distribution}
 library(paletteer)
 
+## translation labels
 trans <- entr_meta %>%
   select(type,meter_tidy) %>%
   unique() %>% 
@@ -581,6 +639,8 @@ q=seq(0,4,by=0.25)
 q[5] <- 0.99999
 
 set.seed(13112)
+
+## take sample of poems and calculate hills for each sample
 for(n in 1:n_samples) {
 
 ## sample docs per group 
@@ -589,11 +649,16 @@ current_s <- s %>% group_by(meter_tidy) %>% sample_n(100,replace=F)
 ## filter 
 si <- i_met %>% ungroup() %>%  filter(doc_id %in% current_s$doc_id)
 
-type_probs <- rhythm_inequality(si,drop_rare = F,raw_values = T,document = "meter_tidy")
+
+## interval probabilities in a sample
+type_probs <- rhythm_inequality(si,
+                                drop_rare = F,
+                                raw_values = T,
+                                document = "meter_tidy")
 #abund_df <- int_count %>% 
  # left_join(entr_meta ,by="doc_id") %>% 
 
-	
+## hills for a sample
 intervals_hills <- type_probs %>% 
   group_by(meter_tidy) %>% 
   summarize(hills=hill(n,q=q),
@@ -602,10 +667,12 @@ intervals_hills <- type_probs %>%
   unnest(cols=c(hills,order)) %>% 
   mutate(s=n)
 
+## save to list
 hills_list[[n]] <- intervals_hills
 
 }
 
+## combine, calculate CIs
 hills_sum <- hills_list %>%
   bind_rows() %>%
   group_by(meter_tidy,order) %>% 
@@ -620,13 +687,15 @@ saveRDS(hills_sum,"data/hills_sum.rds")
 ## if needed
 hills_sum <- readRDS("data/hills_sum.rds")
 
+cp <- paletteer_d("basetheme::clean")[1:7]
+
 hills_sum %>% 
   left_join(entr_meta,by="meter_tidy") %>% 
   ggplot(aes(order,hills,group=meter_tidy)) +
   geom_line(aes(color=type)) +
   geom_ribbon(aes(ymin=lower,ymax=upper,fill=type),alpha=0.2) +
   theme_minimal() +
-  scale_color_paletteer_d("basetheme::clean") +
+  scale_color_manual(labels=c("Accentual", "Accentual, 1-2", "Accentual, 1-3", "Classic meters", "Free verse", "Baseline prose", "Chunked prose"), values=cp) +
   scale_fill_paletteer_d("basetheme::clean") +
   labs(x="Diversity order", y="Hill number") + guides(fill="none") +
   theme(text=element_text(family="gotham"))
@@ -637,12 +706,15 @@ ggsave("plots/FigB_hill_numbers.png",width = 7,height = 3)
 
 ## Formal modeling
 
-Let's assume that our types are - or at least should be - ordered "stages" of regularity (RO). We don't think difference , say, from classical meters to accentual 1-2 is the same as the difference between accentual and prose. We can model the "stage" of regularity as a monotonous effect. We will also stratify entropy (R) by average line length in syllables (S) - as it has an obvious effect on entropy (smaller lines = smaller variation in intervals).
+Let's assume that our types are - or at least should be - ordered "stages" of regularity (C). We don't think difference , say, from classical meters to accentual 1-2 is the same as the difference between accentual and prose. We can model the "stage" of regularity as a monotonous effect. We will also stratify entropy (R) by average line length in syllables (S) - as it has an obvious effect on entropy (smaller lines = smaller variation in intervals).
 
-$$ R \sim mo(RO)*log(S) $$
+$$ R \sim mo(C)*log(S) $$
 
+Flash-forward. Modeling categories as monotonic effect does not yield better predictions, our final model was:
 
-### Posterior predictions
+$$ R \sim C * (S + I(S^2)) $$
+
+### Preparations
 
 ```{r prepare data}
 library(brms)
@@ -667,15 +739,16 @@ d_no_pr <- entr_meta %>% filter(type != "pr-") %>% # filter quasi poems - we don
          R=entropy)
 
 
-# log scale for prose
-ggplot(d, aes(log(mean_ll),entropy)) + geom_point(size=0.5,alpha=0.5) + facet_wrap(~type) + geom_smooth(method="gam")
+# entropy ~ length check
+ggplot(d, aes(log(mean_ll),entropy)) + geom_point(size=0.5,alpha=0.5) + facet_wrap(~type,scales="free_x") + geom_smooth(method="gam")
 
 # meters ~ length relationship check
-d_no_pr %>% filter(type != "pr-") %>% ggplot(aes(log(mean_ll),entropy)) + geom_point(size=0.5,alpha=0.5) + facet_wrap(~meter_tidy,scales = "free_x") + geom_smooth(method="gam")
+#d_no_pr %>% filter(type != "pr-") %>% ggplot(aes(log(mean_ll),entropy)) + geom_point(size=0.5,alpha=0.5) + facet_wrap(~meter_tidy,scales = "free_x") + geom_smooth(method="gam")
 ```
 
-For classic meters that have are governed by strong organizational principles, length of line barely has an influence on entropy scores. For free verse and quasi prose, entropy naturally increases with the increase in line length.
+For classic meters that are governed by strong organizational principles, length of line barely has an influence on entropy scores. For free verse and quasi prose, entropy naturally increases with the increase in line length.
 
+### Models
 
 
 ```{r models}
@@ -704,7 +777,7 @@ m0 <- brm(R ~ type,
           cores=4,
           file="models/m0")
 
-## categoril with interaction 
+## categorical with interaction 
 m0i <- brm(R ~ type*logS,
           data=d,
           chains=4,
@@ -729,7 +802,7 @@ m3iq <- brm(R ~ meter_tidy*(logS + I(logS^2)),
           cores=4,
           file="models/m3iq")
 
-## NO PROSE MODELS (does not make sense since all prose = 1 paragraph = 1 line). We don't have any observation for poems that would have this unreasonably long lines
+## NO PROSE MODELS (does not make sense since all prose = 1 paragraph = 1 line). We don't have any observation for poems that would have this unreasonably long lines. Also does not make sense to fit monotonic effects for C when using fine-grained meters, since we don't assume any "stages" of regularity between e.g. iamb or trochee
 
 # quadratic
 m3iqnp <- brm(R ~ meter_tidy*(logS + I(logS^2)),
@@ -747,38 +820,29 @@ m3inp <- brm(R ~ meter_tidy*logS,
           cores=4,
           file="models/m3inp")
 
-## monotonic effects
-
-m3npmo <- brm(R ~ meter_tidy*logS,
-          data=d_no_pr,
-          chains=4,
-          iter = 2000,
-          cores=4,
-          file="models/m3npmo")
 
 
+## by meter type, no monotonic effects,quadratic better loo
 loo_res <- loo(m0,m1,m0i,m2i,m3i,m3iq)
 
+## quadratic term better loo
 loo_np <- loo(m3inp,m3iqnp)
 
+loo_res$diffs
 loo_np$diffs
 ```
 
-We see that modeling it as a monotonic effect does not bring much (model's predictions are a bit worse), so we will stick with categorical. Conceptually I am more happy about that than a categorical or linear one.
+We see that modeling it as a monotonic effect does not bring much (model's predictions are a bit worse), so we will stick with categorical.
 
 ```{r posterior predictions groups}
 
-library(tidybayes)
-loo_res$diffs
-
-pp_check(m0i)
-conditional_effects(m3iqnp)
 
 ## mean length
 ml <- d_no_pr$logS %>% mean()
 
 set.seed(1989)
-x=d_no_pr %>%
+
+pred_mean=d_no_pr %>%
   data_grid(meter_tidy,logS=ml) %>%
   add_epred_draws(m3iqnp,ndraws = 1000) %>% 
   left_join(trans) %>% 
@@ -788,20 +852,19 @@ x=d_no_pr %>%
             entropy = mean(.epred)) %>% 
   arrange(entropy)
 
-post1 <- x %>% ggplot(aes(reorder(meter_en,entropy),entropy)) + 
-  geom_jitter(data=d_no_pr %>% left_join(trans) %>%  mutate(meter_en = factor(meter_en,levels=x$meter_en)),aes(meter_en,entropy,color=type), alpha=0.1,shape=16,height = 0) +
+post1 <- pred_mean %>% ggplot(aes(reorder(meter_en,entropy),entropy)) + 
+  geom_jitter(data=d_no_pr %>% left_join(trans) %>%  mutate(meter_en = factor(meter_en,levels=pred_mean$meter_en)),aes(meter_en,entropy,color=type), alpha=0.1,shape=16,height = 0) +
   geom_point(size=1) +
   geom_errorbar(aes(ymin=lower,ymax=upper),width=0.4) + scale_color_paletteer_d("basetheme::clean") + 
   theme(text=element_text(family="gotham"),
         axis.text.x = element_text(angle=30,hjust = 1)) + labs(x=NULL,y="Entropy") + guides(color="none")
 
 
-
 ```
 
 ```{r posterior predictions lengths}
 
-conditional_effects(m3iqnp)
+set.seed(1989)
 pr_l=d_no_pr %>%
   data_grid(meter_tidy,logS=seq(1,3,by=0.05)) %>%
   add_epred_draws(m3iqnp,ndraws = 1000)
@@ -822,10 +885,11 @@ p_ll <- pr_l %>%
   geom_line(aes(color=type)) +
   geom_ribbon(aes(ymin=lower,ymax=upper),alpha=0.2) + 
   facet_wrap(~meter_en,ncol = 2) + 
-  scale_color_paletteer_d("basetheme::clean") + labs(x="Average number of syllables in line") + guides(color="none") +
+  scale_color_paletteer_d("basetheme::clean") + labs(x="Average number of syllables in line",y="Estimated mean") + guides(color="none") +
   geom_vline(aes(xintercept=exp(ml)),color="lightgrey",linetype=2) + 
   theme(text=element_text(family="gotham"),
-        axis.title.x = element_text(size=8))
+        axis.title = element_text(size=8),
+        axis.text.y = element_text(size=5))
 ```
 
 ```{r plot combination}
@@ -834,7 +898,7 @@ library(patchwork)
 layout <- "
 AAAABB
 "
-post1 + p_ll +  plot_layout(widths = c(2, 1))
+post1 + p_ll + plot_layout(widths = c(2, 1))
 
 ggsave("plots/FigC_posterior_preds.png",width = 8,height = 5)
 ```
@@ -846,6 +910,7 @@ ggsave("plots/FigC_posterior_preds.png",width = 8,height = 5)
 ```{r umap}
 library(umap)
 
+### document-feature matrix
 i_wide <- int_count %>%
   left_join(entr_meta %>% select(doc_id,meter_tidy),by="doc_id") %>% 
   filter(meter_tidy %in% c("Х","Я","Д","Ан", "Аф","pr-","Дк")) %>% 
@@ -854,7 +919,10 @@ i_wide <- int_count %>%
 #  left_join(tib,by="type") %>% 
   pivot_wider(names_from = no_stress,values_from = n,values_fill = 0)
 
-matrix = i_wide[,-1] %>% as.matrix()
+## simple matrix
+matrix = i_wide[,-1] %>%
+  as.matrix() %>% 
+  scale()
 rownames(matrix) = i_wide$doc_id
 
 set.seed(1810123)
@@ -868,6 +936,7 @@ pr_df <- tibble(x = intervals_u$layout[,1],
 saveRDS(pr_df,"data/projection_df.rds")
 ```
 
+Plotting
 
 ```{r umap plot}
 ## if needed
@@ -885,6 +954,8 @@ ggsave("plots/Fig3_umap.png",width = 8,height = 5)
 
 ### k-means 
 
+K-means clustering with the data for UMAP and for 5 basic meters separately
+
 ```{r calculate ARI for k-means}
 k_mat <- matrix
 d=tibble(doc_id=rownames(k_mat)) %>% left_join(entr_meta,by="doc_id")
@@ -895,7 +966,7 @@ k_met <- k_mat[str_detect(rownames(k_mat),"^X|^Аф|^Ан|^Я|^Д$"),]
 #set.seed(1989)
 k_means_met <- kmeans(k_met, centers = 5, nstart = 50)
 
-print(k_means_met)
+#print(k_means_met)
 
 ## ARI ~ 0.6 for 5 basic meters
 mclust::adjustedRandIndex(k_means_met$cluster,rownames(k_met))
